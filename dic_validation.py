@@ -10,8 +10,8 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
-from scipy.signal import fftconvolve
-from scipy.optimize import curve_fit
+
+from dic_core import run_dic, compute_strain
 
 
 # ---------------------------------------------------------------------------
@@ -85,141 +85,7 @@ def apply_uniform_strain(image, exx=0.005, eyy=0.003, exy=0.0,
 
 
 # ---------------------------------------------------------------------------
-# 3. Subset-based cross-correlation with subpixel peak fitting
-# ---------------------------------------------------------------------------
-
-def _normalized_cc_displacement(ref_subset, def_image, cx, cy, search_radius=15):
-    """
-    Find the displacement of a reference subset in the deformed image
-    using zero-mean normalised cross-correlation (ZNCC).
-
-    Returns (u, v) displacement in pixels (subpixel via parabolic fit).
-    """
-    half = ref_subset.shape[0] // 2
-    s = ref_subset.shape[0]
-
-    # Search window in deformed image
-    sx0 = max(0, cx - half - search_radius)
-    sy0 = max(0, cy - half - search_radius)
-    sx1 = min(def_image.shape[1], cx + half + search_radius + 1)
-    sy1 = min(def_image.shape[0], cy + half + search_radius + 1)
-
-    search_patch = def_image[sy0:sy1, sx0:sx1].astype(np.float64)
-
-    # Zero-mean the subset and normalise
-    tmpl = ref_subset.astype(np.float64)
-    tmpl -= tmpl.mean()
-    tmpl_norm = np.linalg.norm(tmpl)
-    if tmpl_norm == 0:
-        return 0.0, 0.0
-    tmpl /= tmpl_norm
-
-    # Slide template over search patch using valid-mode correlation
-    corr = fftconvolve(search_patch, tmpl[::-1, ::-1], mode='valid')
-
-    # Normalise by local std to get proper ZNCC
-    patch_h, patch_w = search_patch.shape
-    for rr in range(corr.shape[0]):
-        for cc in range(corr.shape[1]):
-            local = search_patch[rr:rr + s, cc:cc + s]
-            lm = local - local.mean()
-            ln = np.linalg.norm(lm)
-            if ln > 0:
-                corr[rr, cc] /= ln
-
-    # Peak location
-    peak_idx = np.unravel_index(np.argmax(corr), corr.shape)
-    pr, pc = peak_idx
-
-    # Subpixel refinement: fit 1D parabola through peak along each axis
-    def subpixel_1d(arr, idx):
-        if idx == 0 or idx == len(arr) - 1:
-            return float(idx)
-        num = arr[idx - 1] - arr[idx + 1]
-        den = arr[idx - 1] - 2 * arr[idx] + arr[idx + 1]
-        if den == 0:
-            return float(idx)
-        return idx + 0.5 * num / den
-
-    pc_sub = subpixel_1d(corr[pr, :], pc)
-    pr_sub = subpixel_1d(corr[:, pc], pr)
-
-    # Convert back to displacement relative to reference subset centre
-    # The top-left of the search patch in the deformed image is (sx0, sy0)
-    # The matched position in the search patch is (pc_sub, pr_sub) for the
-    # top-left of the template, so the matched centre is at:
-    matched_cx = sx0 + pc_sub + half
-    matched_cy = sy0 + pr_sub + half
-
-    u = matched_cx - cx
-    v = matched_cy - cy
-    return u, v
-
-
-def run_dic(ref_image, def_image, subset_size=31, step=16, search_radius=15):
-    """
-    Compute the displacement field via subset-based ZNCC.
-
-    Returns:
-        grid_x, grid_y  : 2-D arrays of subset centre positions
-        u_field         : horizontal displacement (pixels)
-        v_field         : vertical displacement (pixels)
-    """
-    h, w = ref_image.shape[:2]
-    half = subset_size // 2
-    margin = half + search_radius + 2
-
-    xs = np.arange(margin, w - margin, step)
-    ys = np.arange(margin, h - margin, step)
-
-    u_field = np.zeros((len(ys), len(xs)))
-    v_field = np.zeros((len(ys), len(xs)))
-
-    total = len(ys) * len(xs)
-    done  = 0
-
-    for j, cy in enumerate(ys):
-        for i, cx in enumerate(xs):
-            ref_subset = ref_image[cy - half:cy + half + 1,
-                                   cx - half:cx + half + 1]
-            u, v = _normalized_cc_displacement(
-                ref_subset, def_image, cx, cy, search_radius)
-            u_field[j, i] = u
-            v_field[j, i] = v
-            done += 1
-            if done % 50 == 0 or done == total:
-                print(f"  DIC progress: {done}/{total} subsets", end="\r")
-
-    print()
-    gx, gy = np.meshgrid(xs, ys)
-    return gx, gy, u_field, v_field
-
-
-# ---------------------------------------------------------------------------
-# 4. Strain calculation from displacement field
-# ---------------------------------------------------------------------------
-
-def compute_strain(gx, gy, u_field, v_field):
-    """
-    Finite-difference strain from displacement field on a regular grid.
-    Returns exx, eyy, exy (engineering shear).
-    """
-    step_x = np.diff(gx[0, :]).mean()
-    step_y = np.diff(gy[:, 0]).mean()
-
-    du_dx = np.gradient(u_field, step_x, axis=1)
-    du_dy = np.gradient(u_field, step_y, axis=0)
-    dv_dx = np.gradient(v_field, step_x, axis=1)
-    dv_dy = np.gradient(v_field, step_y, axis=0)
-
-    exx = du_dx
-    eyy = dv_dy
-    exy = 0.5 * (du_dy + dv_dx)
-    return exx, eyy, exy
-
-
-# ---------------------------------------------------------------------------
-# 5. Visualization
+# 3. Visualization
 # ---------------------------------------------------------------------------
 
 def visualise(ref_image, def_image, gx, gy, u_field, v_field,
