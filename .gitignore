@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Large image / data files
+*.tif
+*.tiff
+*.avi
+*.mp4
+*.mov
+*.npy
+*.npz
+
+# DIC outputs (keep .png previews, ignore bulk exports)
+*_strain_export/
+results/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# Claude Code session data
+.claude/
+
+# Generated outputs (keep sample assets, ignore bulk runs)
+dic_validation.png
