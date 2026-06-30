@@ -46,3 +46,7 @@ results/
 
 # Generated outputs (keep sample assets, ignore bulk runs)
 dic_validation.png
+ref.png
+def.png
+smoke_test.*
+test_roi.json
