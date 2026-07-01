@@ -113,22 +113,28 @@ def _zncc_displacement(ref_subset, def_image, cx, cy, search_radius):
 # ---------------------------------------------------------------------------
 
 def run_dic(ref_image, def_image, subset_size=31, step=16,
-            search_radius=15, mask=None):
+            search_radius=15, mask=None, def_offset=(0, 0)):
     """
     Subset-based ZNCC DIC over ref_image / def_image.
 
-    mask : optional uint8 array (same HxW as images). Subsets whose
-           centres fall outside the mask (value == 0) are skipped and
-           their displacement is set to NaN.
+    mask       : optional uint8 array (same HxW as ref_image). Subsets whose
+                 centres fall outside the mask are skipped (NaN).
+    def_offset : (ox, oy) added to subset centres when searching def_image.
+                 Use when ref_image is a crop but def_image is the full frame,
+                 so the search window is not artificially constrained by the
+                 narrow crop width.
 
     Returns gx, gy, u_field, v_field  (NaN where masked out).
     """
     h, w = ref_image.shape[:2]
     half   = subset_size // 2
-    margin = half + search_radius + 2
+    ox, oy = int(def_offset[0]), int(def_offset[1])
 
-    xs = np.arange(margin, w - margin, step)
-    ys = np.arange(margin, h - margin, step)
+    # Margin only needs to keep subsets inside the reference crop.
+    # The deformed-image search can roam the full frame via def_offset.
+    ref_margin = half + 1
+    xs = np.arange(ref_margin, w - ref_margin, step)
+    ys = np.arange(ref_margin, h - ref_margin, step)
 
     u_field = np.full((len(ys), len(xs)), np.nan)
     v_field = np.full((len(ys), len(xs)), np.nan)
@@ -145,7 +151,8 @@ def run_dic(ref_image, def_image, subset_size=31, step=16,
 
             ref_sub = ref_image[cy - half:cy + half + 1,
                                 cx - half:cx + half + 1]
-            u, v = _zncc_displacement(ref_sub, def_image, cx, cy, search_radius)
+            u, v = _zncc_displacement(ref_sub, def_image,
+                                      cx + ox, cy + oy, search_radius)
             u_field[j, i] = u
             v_field[j, i] = v
             done += 1

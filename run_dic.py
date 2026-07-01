@@ -203,8 +203,7 @@ def main():
     # Load ROI and crop
     roi = load_roi(args.roi)
     ref_crop, origin = crop_to_roi(ref_full, roi)
-    def_crop, _      = crop_to_roi(def_full, roi)
-
+    # def stays full-frame so search_radius is not constrained by crop width
     print(f"Cropped to ROI bbox {roi['bbox']}  →  "
           f"{ref_crop.shape[1]}×{ref_crop.shape[0]} px")
 
@@ -213,14 +212,15 @@ def main():
     n_mask = int(np.sum(mask > 0))
     print(f"ROI mask: {n_mask} px ({n_mask / mask.size * 100:.1f}% of bbox)\n")
 
-    # Run DIC
+    # Run DIC (search in full deformed image via def_offset)
     print("Running DIC...")
     gx, gy, u_field, v_field = run_dic(
-        ref_crop, def_crop,
+        ref_crop, def_full,
         subset_size=args.subset,
         step=args.step,
         search_radius=args.search,
         mask=mask,
+        def_offset=origin,
     )
 
     # Compute strain
@@ -262,6 +262,7 @@ def main():
 
     # Visualise
     print("Generating figure...")
+    def_crop, _ = crop_to_roi(def_full, roi)
     visualise(ref_crop, def_crop, roi, origin,
               gx, gy, u_field, v_field, exx, eyy, exy, args.out)
 
