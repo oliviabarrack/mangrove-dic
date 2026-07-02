@@ -189,3 +189,27 @@ def compute_strain(gx, gy, u_field, v_field):
     eyy = dv_dy
     exy = 0.5 * (du_dy + dv_dx)
     return exx, eyy, exy
+
+
+# ---------------------------------------------------------------------------
+# Stress (isotropic, plane stress)
+# ---------------------------------------------------------------------------
+
+def compute_stress(exx, eyy, exy, E, nu):
+    """
+    Isotropic linear-elastic, plane-stress Hooke's law: converts the strain
+    field to stress. Valid for a thin, free surface (no out-of-plane
+    constraint) — appropriate for DIC on a branch/stick surface, not for a
+    thick/constrained specimen (which would need plane strain instead).
+
+    E   : Young's modulus (same units the caller wants stress in, e.g. MPa)
+    nu  : Poisson's ratio (unitless)
+
+    Returns sxx, syy, sxy in the units of E.
+    """
+    factor = E / (1 - nu ** 2)
+    sxx = factor * (exx + nu * eyy)
+    syy = factor * (eyy + nu * exx)
+    G = E / (2 * (1 + nu))
+    sxy = 2 * G * exy  # tau_xy = G * gamma_xy, gamma_xy = 2 * exy
+    return sxx, syy, sxy

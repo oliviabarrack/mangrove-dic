@@ -24,7 +24,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
-from dic_core import compute_strain, crop_to_roi, make_roi_mask, run_dic
+from dic_core import compute_strain, compute_stress, crop_to_roi, make_roi_mask, run_dic
 
 # iPhones save photos as HEIC/HEIF by default; register a Pillow plugin so
 # those open the same way as PNG/JPG.
@@ -401,6 +401,29 @@ class DicApp(tk.Tk):
             ttk.Label(manual_row, text=f"  {label}").pack(side="left")
             ttk.Entry(manual_row, textvariable=var, width=6).pack(side="left")
 
+        # Material properties (optional) — if filled in, stress is computed
+        # from the measured strain via isotropic plane-stress Hooke's law.
+        material_row = ttk.Frame(self)
+        material_row.pack(side="top", fill="x", padx=12, pady=(0, 4))
+
+        material_lbl = ttk.Label(material_row, text="Material properties (for stress) ❓:")
+        material_lbl.pack(side="left")
+        ToolTip(material_lbl,
+                "Optional. Fill in both fields to also compute stress from "
+                "the measured strain, using isotropic plane-stress Hooke's "
+                "law: σxx = E/(1-ν²)·(εxx+ν·εyy), σyy = E/(1-ν²)·(εyy+ν·εxx), "
+                "τxy = E/(2(1+ν))·γxy. Plane stress assumes a thin, free "
+                "surface (e.g. a branch or stick) — not a thick/constrained "
+                "specimen. Leave blank to skip stress and see strain only.")
+
+        self.material_e_var = tk.StringVar()
+        self.material_nu_var = tk.StringVar()
+
+        ttk.Label(material_row, text="  Young's modulus E (GPa)").pack(side="left")
+        ttk.Entry(material_row, textvariable=self.material_e_var, width=8).pack(side="left")
+        ttk.Label(material_row, text="  Poisson's ratio ν").pack(side="left")
+        ttk.Entry(material_row, textvariable=self.material_nu_var, width=6).pack(side="left")
+
         self.status_var = tk.StringVar(value="Upload the original (reference) photo to begin.")
         ttk.Label(self, textvariable=self.status_var,
                   foreground="#8ab4f8", background="#0d1117"
@@ -595,6 +618,23 @@ class DicApp(tk.Tk):
                 pass
         return truth or None
 
+    def _get_material_props(self):
+        """Returns (E_mpa, nu) if both fields are filled with valid numbers,
+        None if both are blank (stress skipped). Raises ValueError if only
+        one is filled or a value doesn't parse, so the caller can surface
+        that as a clear error rather than silently skipping stress."""
+        e_text = self.material_e_var.get().strip()
+        nu_text = self.material_nu_var.get().strip()
+        if not e_text and not nu_text:
+            return None
+        if not e_text or not nu_text:
+            raise ValueError(
+                "Fill in both Young's modulus and Poisson's ratio to "
+                "compute stress (or leave both blank to skip it).")
+        e_gpa = float(e_text)
+        nu = float(nu_text)
+        return e_gpa * 1000.0, nu  # GPa -> MPa
+
     # ------------------------------------------------------------------
     def run_dic_clicked(self):
         roi = self.roi_canvas.get_roi()
@@ -620,15 +660,21 @@ class DicApp(tk.Tk):
                                   "Subset/Step/Search must be integers.")
             return
 
+        try:
+            material = self._get_material_props()
+        except ValueError as e:
+            messagebox.showerror("Invalid material properties", str(e))
+            return
+
         self.run_btn.config(state="disabled")
         self.save_btn.config(state="disabled")
         self.status_var.set("Running DIC... this may take a moment.")
         thread = threading.Thread(
             target=self._run_dic_worker,
-            args=(roi, subset, step, search), daemon=True)
+            args=(roi, subset, step, search, material), daemon=True)
         thread.start()
 
-    def _run_dic_worker(self, roi, subset, step, search):
+    def _run_dic_worker(self, roi, subset, step, search, material):
         try:
             ref_crop, origin = crop_to_roi(self.ref_gray, roi)
             mask = make_roi_mask(roi, ref_crop.shape, crop_origin=origin)
@@ -641,9 +687,16 @@ class DicApp(tk.Tk):
             exx, eyy, exy = compute_strain(gx, gy, u_field, v_field)
             def_crop, _ = crop_to_roi(self.def_gray, roi)
 
+            if material is not None:
+                e_mpa, nu = material
+                sxx, syy, sxy = compute_stress(exx, eyy, exy, e_mpa, nu)
+            else:
+                sxx = syy = sxy = None
+
             result = dict(roi=roi, origin=origin, ref_crop=ref_crop,
                           def_crop=def_crop, gx=gx, gy=gy,
-                          u=u_field, v=v_field, exx=exx, eyy=eyy, exy=exy)
+                          u=u_field, v=v_field, exx=exx, eyy=eyy, exy=exy,
+                          material=material, sxx=sxx, syy=syy, sxy=sxy)
         except Exception as e:
             self.after(0, lambda: self._on_dic_error(e))
             return
@@ -677,9 +730,12 @@ class DicApp(tk.Tk):
 
     def _plot_result(self, r):
         self.figure.clear()
-        gs = gridspec.GridSpec(2, 4, figure=self.figure,
+        has_stress = r.get("sxx") is not None
+        nrows = 3 if has_stress else 2
+        self.figure.set_size_inches(9.5, 10.6 if has_stress else 7.5, forward=True)
+        gs = gridspec.GridSpec(nrows, 4, figure=self.figure,
                                 hspace=0.5, wspace=0.45,
-                                left=0.05, right=0.97, top=0.93, bottom=0.07)
+                                left=0.05, right=0.97, top=0.95, bottom=0.05)
 
         def dark(ax, title):
             ax.set_title(title, color="white", fontsize=9)
@@ -788,6 +844,47 @@ class DicApp(tk.Tk):
                         color=col, fontsize=8.5, fontfamily="monospace", va="top")
             y -= 0.078
 
+        if has_stress:
+            e_mpa, nu = r["material"]
+            sxxm = np.ma.masked_invalid(r["sxx"])
+            syym = np.ma.masked_invalid(r["syy"])
+            sxym = np.ma.masked_invalid(r["sxy"])
+            msxx, msyy, msxy = (np.nanmedian(r["sxx"]), np.nanmedian(r["syy"]),
+                                 np.nanmedian(r["sxy"]))
+
+            stress_kw = dict(cmap="turbo", extent=ext, aspect="auto")
+
+            ax_sxx = self.figure.add_subplot(gs[2, 0])
+            im_sxx = ax_sxx.imshow(sxxm, **stress_kw)
+            colorbar(im_sxx, ax_sxx)
+            dark(ax_sxx, f"σ_xx  (median {msxx:+.2f} MPa)")
+
+            ax_syy = self.figure.add_subplot(gs[2, 1])
+            im_syy = ax_syy.imshow(syym, **stress_kw)
+            colorbar(im_syy, ax_syy)
+            dark(ax_syy, f"σ_yy  (median {msyy:+.2f} MPa)")
+
+            ax_sxy = self.figure.add_subplot(gs[2, 2])
+            im_sxy = ax_sxy.imshow(sxym, **stress_kw)
+            colorbar(im_sxy, ax_sxy)
+            dark(ax_sxy, f"σ_xy  (median {msxy:+.2f} MPa)")
+
+            ax_stress_txt = self.figure.add_subplot(gs[2, 3])
+            ax_stress_txt.set_facecolor("#161b22")
+            ax_stress_txt.axis("off")
+            stress_lines = [
+                ("Stress (median, plane stress)", "#58a6ff"),
+                (f"  E = {e_mpa / 1000.0:g} GPa,  ν = {nu:g}", "#888"),
+                (f"  σ_xx  =  {msxx:+.2f} MPa", "#e6edf3"),
+                (f"  σ_yy  =  {msyy:+.2f} MPa", "#e6edf3"),
+                (f"  σ_xy  =  {msxy:+.2f} MPa", "#e6edf3"),
+            ]
+            y = 0.9
+            for text, col in stress_lines:
+                ax_stress_txt.text(0.04, y, text, transform=ax_stress_txt.transAxes,
+                                    color=col, fontsize=8.5, fontfamily="monospace", va="top")
+                y -= 0.16
+
         self.figure.suptitle("DIC Result", color="white",
                               fontsize=13, fontweight="bold")
         self.fig_canvas.draw()
@@ -823,6 +920,12 @@ class DicApp(tk.Tk):
         }
         if self.truth is not None:
             data["ground_truth"] = self.truth
+        if r.get("sxx") is not None:
+            e_mpa, nu = r["material"]
+            data["material"] = {"E_GPa": e_mpa / 1000.0, "nu": nu}
+            data["sxx"] = [[None if np.isnan(v) else v for v in row] for row in r["sxx"]]
+            data["syy"] = [[None if np.isnan(v) else v for v in row] for row in r["syy"]]
+            data["sxy"] = [[None if np.isnan(v) else v for v in row] for row in r["sxy"]]
         Path(f"{prefix}.json").write_text(json.dumps(data, indent=2))
         messagebox.showinfo("Saved",
                              f"Saved:\n{prefix}.png\n{prefix}.json")
